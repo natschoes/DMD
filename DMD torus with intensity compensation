@@ -1,0 +1,906 @@
+# Importation des librairies
+
+
+import PIL
+
+import numpy as np
+import scipy
+
+import cv2
+
+from scipy.ndimage import rotate
+
+import matplotlib.pyplot as plt
+
+import PIL.Image as Image
+
+import time
+
+import sys
+
+#from PIL import image
+
+import matplotlib as mpl
+
+from ALP4 import *
+
+from PIL import Image
+#import imageio
+import threading
+from Definition import access_camera as access_c
+from PIL import Image, ImageDraw
+import os
+
+
+# Définition des fonctions
+
+def plot_intensity(image_paths):
+    plt.figure()
+    i=0
+    for image_path in image_paths:
+        img = Image.open(image_path).rotate(Rotation_angle)
+        img_gray = img.convert("L")
+        img_array = np.array(img_gray)
+        img_array = img_array#[2445:2750,1240:1545]
+        row_intensity = np.mean(img_array, axis=1)
+        plt.plot(row_intensity, label=i)
+        i+=1
+    plt.xlabel("Rows")
+    plt.ylabel("Intensity")
+    plt.title("Intensity of Rows")
+    plt.legend()
+    #plt.save("Intensity_plot_all.jpeg")
+    plt.show()
+
+def affiche_DMD(img, nbImg, display_time):
+
+    # Load the Vialux .dll
+
+    DMD = ALP4(version = '4.3',libDir="./ALP-4.3 API") 
+
+
+
+    # initialize the device
+
+    DMD.Initialize()
+
+    # Binary amplitude image
+
+    # Quantization of the image between 1 (on/off) and 8 (256 pwm grayscale levels).
+
+    bitDepth = 1
+
+    # WARNING even for a boolean quantization, the values readed are 0 and 255.
+    # Array generation
+
+    imgAff = img[0].ravel(order='F')*255 # Modification to a 1D array for the DMD
+
+    
+    if nbImg>1: #Array generation for a sequence with more than 1 image
+        for i in range(nbImg-1):
+            np.concatenate([imgAff,(img[i+1].ravel(order='F')*255)])
+    
+
+
+    # Allocate the onboard memory for the image sequence
+
+    # you can load many pictures change only nbImg
+
+    seq1 = DMD.SeqAlloc(nbImg, bitDepth = bitDepth)
+
+
+
+    # Send the image sequence as a 1D list/array/numpy array
+
+    # enter the images of the sequences
+
+    DMD.SeqPut(imgData =imgAff.ravel(order='F'))
+
+    DMD.SeqControl(controlType=2104 , value=2106) # activation off the uninterrupted mode
+
+    # set image rate to 50 Hz so period of 2e4 µs
+
+    DMD.SetTiming(pictureTime = 2000) 
+
+
+
+    # Run the sequence in an infinite loop
+
+    DMD.Run(loop=True)
+
+    ###there is two method for stopping the DMD: after a chosen time of after pressing enter. Only one method work when the programm is running ( not in comment )
+
+    time.sleep(display_time) # stop the programm for the display time (in seconds) but let the DMD running his sequence
+
+    #input("Press enter to stop the DMD") # stop the sequence display after pressing enter
+
+    # stop the sequence display
+
+    DMD.Halt()
+
+    # Free the sequence from the onboard memory
+
+    DMD.FreeSeq()
+
+    #De-allocate the device
+
+    DMD.Free()
+
+    print("END")
+
+    return
+
+
+### Function creating different images
+
+
+def croix(NombrePixel, ligne_croix, colonne_croix, epaisseur_ligne, epaisseur_colonne):
+
+    """ Crée une croix sur le DMD """
+
+    img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+
+
+    # Ligne horizontale
+
+    img[int(ligne_croix - epaisseur_ligne/2) : int(ligne_croix + epaisseur_ligne/2), :] = 1
+
+
+
+    # Ligne verticale
+
+    img[: , int(colonne_croix - epaisseur_colonne/2) : int(colonne_croix + epaisseur_colonne/2)] = 1
+
+
+
+    return img
+
+
+
+def rectangle(NombrePixel, centre, largeursur2, longueursur2, a):
+
+    """ Crée un rectangle  ayant la valeur a (a = 0 ou 1) sur le DMD.
+
+    centre doit être de la forme (ligne_centre, colonne_centre)
+
+    Attention, NombrePixel = (nbre de colonne, nbre de ligne)
+
+    """
+
+
+    # Rectangle plus petit que le DMD
+
+    assert centre[1] - largeursur2 >= 0
+
+    assert centre[1] + largeursur2 <= NombrePixel[1]
+
+    assert centre[0] - longueursur2 >=0
+
+    assert centre[0] + longueursur2 <= NombrePixel[0]
+
+
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for ligne in range(centre[0] - longueursur2, centre[0] + longueursur2):
+
+            img[ligne, centre[1] - largeursur2 : centre[1] + largeursur2 ] = 0
+
+    else :
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for ligne in range(centre[0] - longueursur2, centre[0] + longueursur2):
+
+            img[ligne, centre[1] - largeursur2 : centre[1] + largeursur2 ] = 1
+
+
+
+    return img
+
+
+
+def uniforme(NombrePixel, a):
+
+    """ Crée une image uniforme sur le DMD (a = 0 ou 1) """
+
+    img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+    img[:,:] = a
+
+    return img
+
+
+
+def k_pixels(NombrePixel, k, a, position_ligne, debut_trait):
+
+    """
+
+    Crée une image avec k pixels qui valent a (a = 0 ou 1)
+
+    position_ligne est la ligne sur laquelle les quelques pixels seront changés
+
+    debut_trait est la colonne où le trait commence
+
+    """
+
+    # Trait plus petit que le DMD
+
+    assert debut_trait + k <= NombrePixel[1]
+
+
+
+    # Quelques pixels noirs sur fond blanc
+
+    if a==0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        img[position_ligne, debut_trait : debut_trait + k] = 0
+
+
+
+    # Quelques pixels blancs sur fond noir
+
+    else:
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        img[position_ligne, debut_trait : debut_trait + k] = 1
+
+
+
+    return img
+
+
+def points_magnification(NombrePixel):
+     img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+     img[960,540]=1
+     img[961,540]=1
+     img[960,541]=1
+     img[961,541]=1
+
+
+
+     img[1260,540]=1
+     img[1261,540]=1
+     img[1261,541]=1
+     img[1260,541]=1
+
+     img[1262,540]=1
+     img[1263,541]=1
+     img[1259,541]=1
+     img[1264,540]=1
+     img[1265,541]=1
+     img[1256,541]=1
+     img[1263,542]=1
+     img[1259,543]=1
+     img[1264,544]=1
+     img[1265,545]=1
+     img[1256,546]=1
+     img[1263,539]=1
+     img[1263,540]=1
+     img[1259,540]=1
+     img[1264,540]=1
+     img[1264,541]=1
+     img[1264,542]=1
+     img[1264,543]=1
+     img[1264,545]=1
+     img[1265,540]=1
+     img[1265,544]=1
+     img[1265,543]=1
+     img[1265,542]=1
+     img[1256,540]=1
+
+
+
+     img[960,840]=1
+     img[961,840]=1
+     img[961,841]=1
+     img[960,841]=1
+     return img
+
+
+def deux_points(NombrePixel, k1, a, position_ligne_pt1, debut_trait_pt1, k2, position_ligne_pt2, debut_trait_pt2):
+
+    """
+
+    Crée une image avec k pixels qui valent a (a = 0 ou 1) à deux endroits différents
+
+    position_ligne est la ligne sur laquelle les quelques pixels seront changés
+
+    debut_trait est la colonne où le trait commence
+
+    """
+
+    # Trait plus petit que le DMD
+
+    assert debut_trait_pt1 + k1 <= NombrePixel[1]
+
+    assert debut_trait_pt2 + k2 <= NombrePixel[1]
+
+
+
+    # Quelques pixels noirs sur fond blanc
+
+    if a==0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        img[position_ligne_pt1, debut_trait_pt1 : debut_trait_pt1 + k1] = a
+
+        img[position_ligne_pt2, debut_trait_pt2 : debut_trait_pt2 + k2] = a
+
+
+
+    # Quelques pixels blancs sur fond noir
+
+    else:
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        img[position_ligne_pt1, debut_trait_pt1 : debut_trait_pt1 + k1] = a
+
+        img[position_ligne_pt2, debut_trait_pt2 : debut_trait_pt2 + k2] = a
+
+
+
+    return img
+
+
+
+def reseau(NombrePixel, pas, a, epaisseur):
+
+    """ Crée un réseau de point valant a (a = 0 ou 1), espacés de 'pas'. Les points du réseau ont une épaisseur 'epaisseur'. """
+
+    if a == 1:
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for ligne in range(0, NombrePixel[0], pas):
+
+            for colonne in range(0, NombrePixel[1], pas):
+
+                img[ ligne : ligne+epaisseur , colonne : colonne+epaisseur] = a
+
+    else:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+
+
+        for ligne in range(0, NombrePixel[0], pas):
+
+            for colonne in range(0, NombrePixel[1], pas):
+
+                img[ ligne : ligne+epaisseur , colonne : colonne+epaisseur] = a
+
+    return img
+
+
+
+def ligne_droite_verticale(NombrePixel, a, debut, longueur):
+
+    """ Crée une ligne droite verticale (par rapport à nous donc incliné de 45° par rapport au DMD. debut de la forme (debut_colonne, debut_ligne) """
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for n in range(longueur):
+
+            img[ debut[1]+n , debut[0]-n ] = a
+
+    if a == 1:
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for n in range(longueur):
+
+            img[ debut[1]+n , debut[0]-n ] = a
+
+    return img
+
+
+
+def ligne_droite_horizontale(NombrePixel, a, debut, longueur):
+
+    """ Crée une ligne droite horizontale (par rapport à nous donc incliné de 45° par rapport au DMD. debut de la forme (debut_colonne, debut_ligne) """
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for n in range(longueur):
+
+            img[ debut[1]+n , debut[0]+n ] = a
+
+    if a == 1:
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for n in range(longueur):
+
+            img[ debut[1]+n , debut[0]+n ] = a
+
+    return img
+
+############################ Function  #########################
+def rectangle(NombrePixel, centre, largeursur2, longueursur2, a):
+
+    """ Crée un rectangle  ayant la valeur a (a = 0 ou 1) sur le DMD.
+
+    centre doit être de la forme (ligne_centre, colonne_centre)
+
+    Attention, NombrePixel = (nbre de colonne, nbre de ligne)
+
+    """
+
+
+    # Rectangle plus petit que le DMD
+
+    assert centre[1] - largeursur2 >= 0
+
+    assert centre[1] + largeursur2 <= NombrePixel[1]
+
+    assert centre[0] - longueursur2 >=0
+
+    assert centre[0] + longueursur2 <= NombrePixel[0]
+
+
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for ligne in range(centre[0] - longueursur2, centre[0] + longueursur2):
+
+            img[ligne, centre[1] - largeursur2 : centre[1] + largeursur2 ] = 0
+
+    else :
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for ligne in range(centre[0] - longueursur2, centre[0] + longueursur2):
+
+            img[ligne, centre[1] - largeursur2 : centre[1] + largeursur2 ] = 1
+
+
+    return img
+
+
+def rectangle_edge(NombrePixel, centre, largeursur2, longueursur2, a):
+
+    """ Crée un rectangle  ayant la valeur a (a = 0 ou 1) sur le DMD.
+
+    centre doit être de la forme (ligne_centre, colonne_centre)
+
+    Attention, NombrePixel = (nbre de colonne, nbre de ligne)
+
+    """
+
+
+    # Rectangle plus petit que le DMD
+
+    assert centre[1] - largeursur2 >= 0
+
+    assert centre[1] + largeursur2 <= NombrePixel[1]
+
+    assert centre[0] - longueursur2 >=0
+
+    assert centre[0] + longueursur2 <= NombrePixel[0]
+
+
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for ligne in range(centre[0] - longueursur2, centre[0] + longueursur2):
+
+            img[ligne, centre[1] - largeursur2 : centre[1] + largeursur2 ] = 0
+
+    else :
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+        # Define the edges of the rectangle
+        top_edge = centre[0] - longueursur2
+        bottom_edge = centre[0] + longueursur2
+        left_edge = centre[1] - largeursur2
+        right_edge = centre[1] + largeursur2
+
+        # Top and bottom edges
+        img[top_edge, left_edge:right_edge] = 1
+        img[bottom_edge, left_edge:right_edge] = 1
+
+        # Left and right edges
+        img[top_edge:bottom_edge, left_edge] = 1
+        img[top_edge:bottom_edge, right_edge] = 1
+
+    return img
+
+
+    # Pixel number
+def gaussian2(x,a,c,s):
+    return a*np.exp(-((x-c)/s)**2)
+
+def super_gaussian(x,y,amplitude,center,size,exponent):
+    array=np.ones((len(y),len(x)))
+    for i in range(len(x)):
+        for j in range(len(y)):
+            array[j,i]=amplitude*np.exp(-((x[i]-center)/size)**exponent)*np.exp(-((y[j]-center)/size)**exponent)
+    return array
+######################
+
+def rectangle_droit(NombrePixel, debut, largeur, longueur, a):
+
+    """ Crée un rectangle droit """
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for i in range(largeur-100):
+
+            for j in range(longueur-100):
+
+                img[ i+debut[1]-j , i+debut[0]+j ] = a
+
+    else:
+
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+
+        for i in range(largeur-100):
+
+            for j in range(longueur-100):
+
+                img[ i+debut[1]-j , i+debut[0]+j ] = a
+
+    return img
+    
+
+def circle(r):
+    img = np.zeros([1920, 1080], dtype=int)
+    for x in range(1920):
+        for y in range(1080):
+            if((x-960)**2+(y-540)**2)<(r*r):
+               img[x,y]=1
+    return img
+
+
+def circle_mask(radius, img_shape, center):
+    mask = np.zeros(img_shape, dtype=int)
+    center_x, center_y = center
+    for x in range(img_shape[0]):
+        for y in range(img_shape[1]):
+            if (x - center_x) ** 2 + (y - center_y) ** 2 < radius * radius:
+                mask[x, y] = 1
+    return mask
+
+def apply_circular_crop(image, radius, center):
+    mask = circle_mask(radius, image.shape, center)
+    circular_image = image * mask
+    return circular_image
+
+def crop_to_bounding_box_with_padding(image, padding):
+    coords = np.column_stack(np.where(image > 0))
+    if coords.size == 0:
+        return image
+    x_min, y_min = coords.min(axis=0)
+    x_max, y_max = coords.max(axis=0)
+    
+    # Add padding
+    x_min = max(x_min - padding, 0)
+    y_min = max(y_min - padding, 0)
+    x_max = min(x_max + padding, image.shape[0] - 1)
+    y_max = min(y_max + padding, image.shape[1] - 1)
+    
+    cropped_image = image[x_min:x_max+1, y_min:y_max+1]
+    return cropped_image
+
+
+def rectangle_wt(NombrePixel, centre, widthdividedbytwo, lengthdividedbytwo, a):
+    img = np.ones(NombrePixel, dtype=int) if a == 0 else np.zeros(NombrePixel, dtype=int)
+
+    for ligne in range(int(centre[0]) - int(lengthdividedbytwo), int(centre[0]) + int(lengthdividedbytwo)):
+        img[ligne, centre[1] - widthdividedbytwo:centre[1] + widthdividedbytwo] = a
+
+    return img
+
+def rectangle_wt(NombrePixel, centre, largeursur2, longueursur2, a):
+    assert centre[1] - largeursur2 >= 0
+    assert centre[1] + largeursur2 <= NombrePixel[1]
+    assert centre[0] - longueursur2 >=0
+    assert centre[0] + longueursur2 <= NombrePixel[0]
+
+    if a == 0:
+
+        img = np.ones([NombrePixel[0], NombrePixel[1]], dtype=int)
+        for ligne in range(centre[0] - longueursur2, centre[0] + longueursur2):
+            img[ligne, centre[1] - largeursur2 : centre[1] + largeursur2 ] = 0
+    else :
+        img = np.zeros([NombrePixel[0], NombrePixel[1]], dtype=int)
+        for ligne in range(int(centre[0]) - int(longueursur2), int(centre[0]) + int(longueursur2)):
+            img[ligne, int(centre[1]) - int(largeursur2) : int(centre[1]) + int(largeursur2) ] = 1
+    return img
+
+
+def display_torus_and_rectangle(NombrePixel, outer_radius, inner_radius, rectangle_size):
+    # Create a torus
+    torus_img = torrus(outer_radius, inner_radius)
+
+    # Define the rectangle parameters
+    centre = (rectangle_size[0] // 2 + 500, rectangle_size[1] // 2 + 400)  # Center of rectangle
+    centre = (int(centre[0]), int(centre[1]))  # Ensure integers
+    widthdividedbytwo = rectangle_size[1] // 2
+    lengthdividedbytwo = rectangle_size[0] // 2
+    a = 1  # Rectangle value
+
+    # Create the rectangle
+    rectangle_img = rectangle_wt(NombrePixel, centre, widthdividedbytwo, lengthdividedbytwo, a)
+
+    # Combine the images
+    combined_img = torus_img + rectangle_img
+
+    return combined_img
+
+
+def add_rectangle_to_array(array, rectangle_size):
+    NombrePixel = array.shape
+    centre = (rectangle_size[0] // 2 + 500, rectangle_size[1] // 2 + 400)  # Center of rectangle
+    widthdividedbytwo = rectangle_size[1] // 2
+    lengthdividedbytwo = rectangle_size[0] // 2
+    a = 1  # Rectangle value
+
+    # Create the rectangle
+    rectangle_img = rectangle(NombrePixel, centre, widthdividedbytwo, lengthdividedbytwo, a)
+
+    # Add the rectangle to the original array
+    modified_array = array + rectangle_img
+    return modified_array
+
+def torrus(outer_radius, inner_radius):
+    return (circle(outer_radius)-circle(inner_radius))>0.5
+
+# Main code
+
+
+
+if __name__ == "__main__":
+
+    image_paths = []
+    # definition of parameter
+   
+    display_time = 5800
+    mirror_state= 1
+    mirror_size = 10.8e-6         # = a
+    Nx = 1920
+    Ny = 1080
+    pixel_number = (Nx, Ny)
+   
+   
+    magnification=291/200#(np.sqrt(180000)*1.85)*(300*10.8)**(-1)
+    Demagnification=200/291#(np.sqrt(180000)*1.85)*(300*10.8)
+    Rotation_angle=-47.11#-46.95
+    ratio_px=10.8/1.85
+
+    #demag ist 3/2>d>4/3
+    
+    img_torrus_with_small_rect = display_torus_and_rectangle(pixel_number, 200, 130, (60,60))
+    img_torrus_with_small_rect_resized = display_torus_and_rectangle(pixel_number, 200*magnification, 130*magnification, (60*magnification,60*magnification))
+    torrus = (circle(200)-circle(130))>0.5
+    torrus_resized = (circle(200*magnification)-circle(130*magnification-1))>0.5
+    torrus_downsized = (circle(200*Demagnification)-circle(130*Demagnification))>0.5
+    img_points=points_magnification(pixel_number)
+    
+    image_path = r"D:\dmd thesis\FS testing\torrus\Iris\use filter\20.bmp"
+    #i=2
+    imgbmp=Image.open(image_path).rotate(Rotation_angle)
+    im_array=np.transpose(np.array(imgbmp))
+    im_array_cropped=im_array[1508:2092,1343:1927]#[1392:2257,1261:2110] for resized torrus #[y,x] [1613:1909,1452:1748]  
+    img_exp = im_array_cropped
+
+    img_path_old = r"C:\Users\lavoine\Desktop\Andor python\previous.bmp"
+    img_old=Image.open(img_path_old)
+
+
+    intensity_value = im_array[1144:1215,1444:1512]
+    #outcomment for display
+    intensity_value_previous = Image.open(r"D:\dmd thesis\FS testing\torrus\Iris\use filter\0.bmp").rotate(Rotation_angle)
+    im_array_intensity=np.transpose(np.array(intensity_value_previous))
+    intensity_value_previous = im_array_intensity[1144:1215,1444:1512]
+
+    
+    def calculate_minP():
+        minP=80
+        reference_intensity_value_previous = np.mean(intensity_value_previous)
+        reference_intensity_value = np.mean(intensity_value)
+        print("previous: ", reference_intensity_value_previous, "now: ", reference_intensity_value)
+        if reference_intensity_value==reference_intensity_value_previous:
+            print("No intensity fluctuation")
+        else:
+            ratio = reference_intensity_value/reference_intensity_value_previous
+            minP=minP*ratio
+            print("fluctuation of: ", ratio)
+        return minP
+
+    minP=calculate_minP()
+    print("minP: ", minP)
+    
+
+    #target_img = minP*torrus_resized[668:1252,248:832]
+    #choose minP s.t. intensity fluctuation is compensated
+    target_img = minP*img_torrus_with_small_rect_resized[668:1252,248:832]
+
+    #for display and 1st iteration img_old=target_img
+    img_old=target_img
+    '''
+    plt.figure(1)
+    plt.imshow(img_exp, cmap='viridis')
+    plt.title("image from experiment")
+    plt.colorbar()
+
+    plt.figure(2)
+    plt.imshow(target_img)
+    plt.title("Target")
+    plt.colorbar()
+
+    plt.figure(3)
+    plt.imshow(intensity_value)
+    plt.colorbar()
+    plt.title("sqaure")
+
+    plt.show()
+    exit(0)
+    '''
+
+    ##################### PID LOOP and CREATION OF THE NEW IMAGE ################
+    Kp=0.2
+    error=Kp*(target_img-img_exp)
+    ###filter out errors caused by noise of the background###
+    '''
+    plt.figure(1)
+    plt.imshow(error, cmap='viridis')
+    plt.title("error")
+    plt.colorbar()
+    plt.show()
+    '''
+    # Get the dimensions of the image
+    height, width = error.shape
+
+    center = (width // 2, height // 2)
+    inner_radius = 130*magnification
+    outer_radius = 200*magnification
+
+    # Create a grid of coordinates
+    y, x = np.ogrid[:height, :width]
+
+    # Calculate the distance from the center
+    distance_from_center = np.sqrt((x - center[0])**2 + (y - center[1])**2)
+
+    # Create the mask for the torus
+    mask = (distance_from_center >= inner_radius) & (distance_from_center <= outer_radius)
+
+    # Apply the mask to the error image, setting values outside the torus to zero
+    error_cleaned = np.where(mask, error, 0)
+    error=error_cleaned
+    '''
+    plt.figure(2)
+    plt.imshow(error, cmap='viridis')
+    plt.title("error cleaned")
+    plt.colorbar()
+
+    plt.show()
+    #exit(0)
+    '''
+    '''
+    plt.figure(2)
+    plt.imshow(img_old, cmap='viridis')
+    plt.colorbar()
+    plt.title("img old")
+
+    plt.show()
+    #exit(0)
+    
+    '''
+    
+    ####################################
+
+
+    new_img=img_old+error   
+    #exit(0)
+    #for first two iterations outcommented
+    #img_old.close()
+
+
+    
+    ####################CONVOLUTION WITH THE PSF ##################
+    #convolution of image with added error with psf
+
+    #adjust it and also add the rectangle at the same position
+    newsize=30
+    x=np.linspace(-newsize//2,newsize//2,newsize)
+    y=np.linspace(-newsize//2,newsize//2,newsize)
+    sigmax=1.0
+    sigmay=1.0
+    exp_convol=np.ones((newsize,newsize))       
+    for i in range(exp_convol.shape[0]):
+        for k in range(exp_convol.shape[0]):
+            exp_convol[i,k]=1/2/np.pi/sigmax/sigmay*np.exp(-1/2*x[i]**2/sigmax**2-1/2*y[k]**2/sigmay**2)
+    img_conv=scipy.signal.fftconvolve(new_img,exp_convol,mode="same")
+    img_conv[img_conv>255]=255
+
+
+    img1=Image.fromarray(np.uint8((np.array(img_conv))),mode="L")
+    img1.save("previous.bmp") 
+
+    img2=img1.resize((400, 400))
+
+    '''
+    plt.figure(1)
+    plt.imshow(img1)
+    plt.colorbar()
+    plt.title("convolution with psf")
+    
+    plt.show()
+    '''
+    #exit(0)
+
+    newarray=np.array(img2) 
+
+
+    ############## CREATION OF THE NEW FLOYD STEINBERG IMAGE ####################
+    
+
+    #RESCALING to necessary array size
+    background=PIL.Image.new(mode="L",size=(1080,1920)) #creates array with zeros in size of dmd
+    background_array=np.array(background)
+
+    dim_img=newarray.shape
+    print("Dimension convolved image: ", dim_img)
+    for i in range(dim_img[0]):
+        for k in range(dim_img[1]):
+            background_array[(960-dim_img[1]//2)+i, (540-dim_img[0]//2)+k]+=newarray[i,k] 
+
+    #for normalization of dithering
+    background_array[background_array>255]=255
+    background_array=np.array((255/np.max(background_array))*background_array)
+
+
+    #DITHERING
+    imgfinal=Image.fromarray(np.uint8(background_array),mode="L")       #why is all of this necessary?
+    img_FS=np.array(imgfinal.convert("1",dither=Image.Dither.FLOYDSTEINBERG))#>0.5  
+    img_FS=add_rectangle_to_array(img_FS, (60,60))
+
+
+    #creation of form
+    #affiche_DMD([img_torrus_with_small_rect], nbImg = 1, display_time = display_time) 
+    #affiche_DMD([donut], nbImg = 1, display_time = display_time)
+    affiche_DMD([img_FS], nbImg = 1, display_time = 5800)
+    #affiche_DMD([torrus], nbImg = 1, display_time = display_time)
+    '''
+    plt.figure(1)
+    plt.imshow(img_FS)
+    plt.title("FS")
+    plt.colorbar()
+
+    plt.figure(2)
+    plt.imshow(img_torrus_with_small_rect)
+    plt.title("target")
+    plt.colorbar()
+
+    plt.show()
+    '''
+    '''
+    t1=threading.Thread(target=affiche_DMD, args=[[img_FS], 1, ])
+    t1.start()
+    #t1.join()
+    #time.sleep(5)   #maybe not even neccessary
+    access_c.record_image(10, 0, (3000, 4000), 1, 2)
+    #exposure, gain, image_shape, num_images, loop_index
+    '''
+
+    #plot_intensity(image_paths2)
